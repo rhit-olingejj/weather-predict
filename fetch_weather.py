@@ -60,8 +60,7 @@ class City:
     admin1: str = ""  # e.g. state / province -> maps to admin_div_1
 
 
-# Cities to fetch, as (query, country_code) pairs. The country_code
-# disambiguates common names (there are many "Londons") when geocoding.
+# Cities to fetch, as (query, country_code) pairs. The country_code disambiguates common names (there are many "Londons") when geocoding.
 CITY_QUERIES = [
     ("New York", "US"),
     ("London", "GB"),
@@ -86,11 +85,9 @@ CSV_FIELDS = [
 
 
 def resolve_range(args: argparse.Namespace) -> tuple[date, date]:
-    """Return (start_date, end_date) for the archive query."""
     if args.end:
         end = datetime.strptime(args.end, "%Y-%m-%d").date()
     else:
-        # Archive data lags ~1 day; "24 hours ago" is yesterday (UTC).
         end = (datetime.now(timezone.utc) - timedelta(hours=24)).date()
 
     if args.start:
@@ -109,7 +106,6 @@ def resolve_range(args: argparse.Namespace) -> tuple[date, date]:
 
 def fetch_city(city: City, start: date, end: date, session: requests.Session,
                retries: int = 4) -> list[dict]:
-    """Fetch daily rows for one city, with simple exponential backoff."""
     params = {
         "latitude": city.latitude,
         "longitude": city.longitude,
@@ -123,7 +119,6 @@ def fetch_city(city: City, start: date, end: date, session: requests.Session,
     for attempt in range(retries):
         try:
             resp = session.get(ARCHIVE_URL, params=params, timeout=60)
-            # Open-Meteo returns 429 when rate limited; back off and retry.
             if resp.status_code == 429:
                 raise requests.HTTPError("429 rate limited", response=resp)
             resp.raise_for_status()
@@ -167,7 +162,6 @@ def _at(daily: dict, key: str, i: int):
 
 def geocode(query: str, country_code: str, session: requests.Session,
             retries: int = 4) -> City:
-    """Resolve a city name to its center coordinates via the Geocoding API."""
     params = {"name": query, "count": 10, "language": "en", "format": "json"}
 
     last_err: Exception | None = None
@@ -181,8 +175,7 @@ def geocode(query: str, country_code: str, session: requests.Session,
             if not results:
                 raise RuntimeError(f"no geocoding match for {query!r}")
 
-            # Prefer a hit in the requested country; the API already ranks by
-            # population, so the first match is otherwise the best.
+            # Prefer a hit in the requested country; the API already ranks by population, so the first match is otherwise the best.
             match = next(
                 (r for r in results
                  if not country_code or r.get("country_code") == country_code),
@@ -209,11 +202,7 @@ def geocode(query: str, country_code: str, session: requests.Session,
 
 def resolve_cities(session: requests.Session, cache_path: Path,
                    refresh: bool) -> list[City]:
-    """Return City objects, using the JSON cache when available.
-
-    Cache is offline-safe: if geocoding fails but a cached entry exists, the
-    cached coordinates are used.
-    """
+    # Return City objects, using the JSON cache when available.
     cache: dict[str, dict] = {}
     if cache_path.exists() and not refresh:
         try:
