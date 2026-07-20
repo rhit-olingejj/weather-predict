@@ -37,9 +37,7 @@ import requests
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
-# Daily variables requested from the archive API. Humidity and precipitation
-# probability are only offered at hourly resolution, so they are not available
-# here; the corresponding schema columns (humidity, precip_chance) are left null.
+# Daily variables requested from the archive API. Humidity and precipitation probability are only offered at hourly resolution, so they are not available here; the corresponding schema columns (humidity, precip_chance) are left null.
 DAILY_VARS = [
     "temperature_2m_mean",
     "temperature_2m_max",
@@ -52,7 +50,7 @@ DAILY_VARS = [
 @dataclass(frozen=True)
 class City:
     name: str
-    latitude: float   # geocoded city center
+    latitude: float
     longitude: float
     timezone: str
     country: str = ""
@@ -93,7 +91,7 @@ def resolve_range(args: argparse.Namespace) -> tuple[date, date]:
     if args.start:
         start = datetime.strptime(args.start, "%Y-%m-%d").date()
     else:
-        # ~5 years back. Handle Feb 29 by falling back a day.
+        # Handle Feb 29 by falling back a day.
         try:
             start = end.replace(year=end.year - args.years)
         except ValueError:
@@ -202,7 +200,6 @@ def geocode(query: str, country_code: str, session: requests.Session,
 
 def resolve_cities(session: requests.Session, cache_path: Path,
                    refresh: bool) -> list[City]:
-    # Return City objects, using the JSON cache when available.
     cache: dict[str, dict] = {}
     if cache_path.exists() and not refresh:
         try:
