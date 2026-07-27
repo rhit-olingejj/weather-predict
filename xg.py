@@ -106,12 +106,12 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
 
     grouped = df.groupby("city", sort=False)
 
-    # the history of yesterday, the day before, a week ago#
+    # the history of yesterday, the day before, a week ago
     for column in LAGGED_COLUMNS:
         for lag in LAG_DAYS:
             df[f"{column}_lag{lag}"] = grouped[column].shift(lag)
 
-    # trailing windows (inclusive of today) #
+    # trailing windows (inclusive of today) 
     def roll(column: str, window: int, how: str) -> pd.Series:
         return grouped[column].transform(
             lambda s: getattr(s.rolling(window, min_periods=window), how)()
@@ -128,14 +128,14 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
     df["wet_days_roll7"] = roll("is_wet", 7, "sum")
     df["wet_days_roll30"] = roll("is_wet", 30, "sum")
 
-    # where today sits against its own recent history#
+    # where today sits against its own recent history
     df["temp_delta_1d"] = df["temp_mean_c"] - df["temp_mean_c_lag1"]
     df["temp_delta_3d"] = df["temp_mean_c"] - df["temp_mean_c_lag3"]
     df["temp_anomaly_7d"] = df["temp_mean_c"] - df["temp_mean_c_roll7_mean"]
     df["temp_anomaly_30d"] = df["temp_mean_c"] - df["temp_mean_c_roll30_mean"]
     df["precip_delta_1d"] = df["precip_mm"] - df["precip_mm_lag1"]
 
-    # today's sky, one-hot (trees shouldn't read order into categories) #
+    # today's sky, one-hot (trees shouldn't read order into categories) 
     for category in WMO_CATEGORIES:
         df[f"cond_today_{convert_names(category)}"] = (df["condition"] == category).astype(float)
 
@@ -247,8 +247,6 @@ def learning_curve(model, points: int = 8) -> list[tuple[int, float]]:
 
 def search(factory, evaluate, metric: str, X_train, y_train, X_validate, y_validate,
            grid=None, say=print) -> list[dict]:
-    # Resolved here rather than as a default argument, which would freeze the
-    # grid at import time and ignore any later change to PARAM_GRID.
     grid = PARAM_GRID if grid is None else grid
 
     trials = []
