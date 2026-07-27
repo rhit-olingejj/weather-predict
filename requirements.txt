@@ -14,3 +14,4 @@ scipy==1.18.0
 six==1.17.0
 threadpoolctl==3.6.0
 tzdata==2026.3
+xgboost==3.3.0
