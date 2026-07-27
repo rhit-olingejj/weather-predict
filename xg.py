@@ -6,6 +6,7 @@ import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 import joblib
 import numpy as np
@@ -138,7 +139,7 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
     for category in WMO_CATEGORIES:
         df[f"cond_today_{convert_names(category)}"] = (df["condition"] == category).astype(float)
 
-    #the day being forecast, and where #
+    #the day being forecast, and where 
     df["target_date"] = df["date"] + pd.Timedelta(days=1)
     target_doy = df["target_date"].dt.dayofyear
     df["target_doy_sin"] = np.sin(2 * np.pi * target_doy / 365.25)
@@ -177,41 +178,106 @@ def feature_names(features: pd.DataFrame) -> list[str]:
 SPLIT_STRATEGY = "random 64/16/20 (Train_validate_test_split)"
 
 
-COMMON_PARAMS = dict(
-    n_estimators=2000,
-    learning_rate=0.05,
-    max_depth=5,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    min_child_weight=3,
-    reg_lambda=1.0,
+# Held constant across the search.
+FIXED_PARAMS = dict(
     early_stopping_rounds=50,
     tree_method="hist",
     n_jobs=-1,
     random_state=42,
 )
 
+# The candidates. Each spans a different trade-off between how much structure a tree may fit (max_depth, min_child_weight) and how hard the fit is damped (learning_rate, subsample, colsample_bytree, reg_lambda), rather than being a dense grid over one axis.
+PARAM_GRID = (
+    {"name": "shallow",      "n_estimators": 400,  "max_depth": 3,  "learning_rate": 0.10,
+     "min_child_weight": 1,  "subsample": 1.0, "colsample_bytree": 1.0, "reg_lambda": 1.0},
+    {"name": "baseline",     "n_estimators": 800,  "max_depth": 5,  "learning_rate": 0.05,
+     "min_child_weight": 3,  "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0},
+    {"name": "slow-steady",  "n_estimators": 2000, "max_depth": 4,  "learning_rate": 0.02,
+     "min_child_weight": 2,  "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 1.0},
+    {"name": "wide-sparse",  "n_estimators": 1500, "max_depth": 6,  "learning_rate": 0.03,
+     "min_child_weight": 5,  "subsample": 0.6, "colsample_bytree": 0.5, "reg_lambda": 2.0},
+    {"name": "heavy-reg",    "n_estimators": 800,  "max_depth": 6,  "learning_rate": 0.05,
+     "min_child_weight": 20, "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 20.0},
+    {"name": "deep",         "n_estimators": 600,  "max_depth": 8,  "learning_rate": 0.05,
+     "min_child_weight": 3,  "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0},
+    {"name": "deep-damped",  "n_estimators": 1500, "max_depth": 8,  "learning_rate": 0.02,
+     "min_child_weight": 10, "subsample": 0.7, "colsample_bytree": 0.6, "reg_lambda": 5.0},
+    {"name": "aggressive",   "n_estimators": 300,  "max_depth": 10, "learning_rate": 0.10,
+     "min_child_weight": 1,  "subsample": 1.0, "colsample_bytree": 1.0, "reg_lambda": 0.5},
+    {"name": "short-budget", "n_estimators": 60,   "max_depth": 5,  "learning_rate": 0.10,
+     "min_child_weight": 3,  "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 1.0},
+    {"name": "long-slow",    "n_estimators": 2500, "max_depth": 4,  "learning_rate": 0.01,
+     "min_child_weight": 2,  "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 1.0},
+)
 
-def train_temperature_model(X_train, y_train, X_validate, y_validate) -> xgb.XGBRegressor:
-    model = xgb.XGBRegressor(objective="reg:squarederror", eval_metric="rmse",
-                             **COMMON_PARAMS)
-    model.fit(X_train, y_train, eval_set=[(X_validate, y_validate)], verbose=False)
-    return model
+SELECTION_METRIC = {
+    "temperature": "mae_c",
+    "precipitation": "log_loss",
+    "condition": "log_loss",
+}
 
 
-def train_precip_model(X_train, y_train, X_validate, y_validate) -> xgb.XGBClassifier:
-    model = xgb.XGBClassifier(objective="binary:logistic", eval_metric="logloss",
-                              **COMMON_PARAMS)
-    model.fit(X_train, y_train, eval_set=[(X_validate, y_validate)], verbose=False)
-    return model
+def make_temperature_model(params: dict) -> xgb.XGBRegressor:
+    # Early stopping watches MAE so it optimises the same quantity the test metric reports. The model itself is trained on squared error, which is the only supported loss for regression trees in XGBoost.
+    return xgb.XGBRegressor(objective="reg:squarederror", eval_metric="mae",
+                            **FIXED_PARAMS, **params)
 
 
-def train_condition_model(X_train, y_train, X_validate, y_validate,
-                          n_classes: int) -> xgb.XGBClassifier:
-    model = xgb.XGBClassifier(objective="multi:softprob", eval_metric="mlogloss",
-                              num_class=n_classes, **COMMON_PARAMS)
-    model.fit(X_train, y_train, eval_set=[(X_validate, y_validate)], verbose=False)
-    return model
+def make_precip_model(params: dict) -> xgb.XGBClassifier:
+    return xgb.XGBClassifier(objective="binary:logistic", eval_metric="logloss",
+                             **FIXED_PARAMS, **params)
+
+
+def make_condition_model(n_classes: int):
+    def factory(params: dict) -> xgb.XGBClassifier:
+        return xgb.XGBClassifier(objective="multi:softprob", eval_metric="mlogloss",
+                                 num_class=n_classes, **FIXED_PARAMS, **params)
+    return factory
+
+
+def learning_curve(model, points: int = 8) -> list[tuple[int, float]]:
+    history = model.evals_result_.get("validation_0", {})
+    if not history:
+        return []
+    values = history[list(history)[-1]]
+    step = max(1, len(values) // points)
+    rounds = sorted({*range(0, len(values), step), int(model.best_iteration)})
+    return [(i + 1, float(values[i])) for i in rounds]
+
+
+def search(factory, evaluate, metric: str, X_train, y_train, X_validate, y_validate,
+           grid=None, say=print) -> list[dict]:
+    # Resolved here rather than as a default argument, which would freeze the
+    # grid at import time and ignore any later change to PARAM_GRID.
+    grid = PARAM_GRID if grid is None else grid
+
+    trials = []
+    for candidate in grid:
+        params = {key: value for key, value in candidate.items() if key != "name"}
+        started = perf_counter()
+        model = factory(params)
+        model.fit(X_train, y_train, eval_set=[(X_validate, y_validate)], verbose=False)
+        scores = evaluate(model, X_validate, y_validate)
+        trees = int(model.best_iteration) + 1
+        # The budget bound if training ran out of trees before early stopping fired -- the candidate may still have been improving.
+        capped = trees >= params["n_estimators"]
+        trials.append({
+            "name": candidate["name"],
+            "params": params,
+            "model": model,
+            "best_iteration": int(model.best_iteration),
+            "capped": capped,
+            "validate": scores,
+            "score": float(scores[metric]),
+            "seconds": round(perf_counter() - started, 1),
+            "curve": learning_curve(model),
+        })
+        say(f"    {candidate['name']:<13} {metric} {scores[metric]:.4f}"
+            f"  ({trees} trees{' — budget bound' if capped else ''},"
+            f" {trials[-1]['seconds']}s)")
+
+    trials.sort(key=lambda trial: trial["score"])
+    return trials
 
 
 def evaluate_temperature(model, X, y_true, persistence: pd.Series) -> dict:
@@ -255,6 +321,45 @@ def top_features(model, names: list[str], k: int = 12) -> list[tuple[str, float]
     importances = model.feature_importances_
     order = np.argsort(importances)[::-1][:k]
     return [(names[i], float(importances[i])) for i in order]
+
+
+SEARCH_COLUMNS = {
+    "temperature": (("mae_c", "MAE"), ("rmse_c", "RMSE"), ("r2", "R2")),
+    "precipitation": (("log_loss", "log loss"), ("roc_auc", "ROC AUC"),
+                      ("accuracy", "accuracy"), ("brier", "Brier")),
+    "condition": (("log_loss", "log loss"), ("accuracy", "accuracy"),
+                  ("macro_f1", "macro F1")),
+}
+
+
+def report_search(metrics: dict) -> None:
+    for target, entry in metrics.items():
+        trials = entry["trials"]
+        columns = SEARCH_COLUMNS[target]
+        print()
+        print("=" * 84)
+        print(f"{target} -- {len(trials)} candidates, "
+              f"selected on validation {entry['selection_metric']}")
+        print("-" * 84)
+        header = (f"{'config':<14}{'depth':>6}{'lr':>7}{'mcw':>5}{'sub':>6}{'col':>6}"
+                  f"{'lambda':>8}{'budget':>8}{'trees':>7}")
+        print(header + "".join(f"{title:>10}" for _, title in columns))
+        for trial in trials:
+            params = trial["params"]
+            trees = f"{trial['best_iteration'] + 1}{'*' if trial['capped'] else ''}"
+            row = (f"{trial['name']:<14}{params['max_depth']:>6}"
+                   f"{params['learning_rate']:>7.2f}{params['min_child_weight']:>5}"
+                   f"{params['subsample']:>6.1f}{params['colsample_bytree']:>6.1f}"
+                   f"{params['reg_lambda']:>8.1f}{params['n_estimators']:>8}{trees:>7}")
+            row += "".join(f"{trial['validate'][key]:>10.3f}" for key, _ in columns)
+            print(row + ("   <- best" if trial is trials[0] else ""))
+        if any(trial["capped"] for trial in trials):
+            print("  * budget bound before early stopping fired")
+
+        curve = entry["learning_curve"]
+        if curve:
+            print(f"  winner's validation score by round: "
+                  + "  ".join(f"{round_no}:{value:.3f}" for round_no, value in curve))
 
 
 def report(metrics: dict, importances: dict) -> None:
@@ -301,9 +406,6 @@ def report(metrics: dict, importances: dict) -> None:
     print("=" * 68)
 
 
-# --------------------------------------------------------------------------- #
-# Training entry point
-# --------------------------------------------------------------------------- #
 def save_bundle(bundle: dict, model_dir: str | Path) -> Path:
     directory = Path(model_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -314,7 +416,6 @@ def save_bundle(bundle: dict, model_dir: str | Path) -> Path:
 
 def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
           quiet: bool = False) -> dict:
-    """Fit all three next-day models and write the bundle to `model_dir`."""
 
     def say(message: str = "") -> None:
         if not quiet:
@@ -351,42 +452,59 @@ def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
         "test": X_test["temp_mean_c"],
     }
 
-    say("Training temperature regressor ...")
-    temp_model = train_temperature_model(
-        X_train, y_train[TARGET_TEMP], X_validate, y_validate[TARGET_TEMP])
+    say(f"Trying {len(PARAM_GRID)} parameter sets per target, "
+        f"selecting on validation {' / '.join(sorted(set(SELECTION_METRIC.values())))}")
+    say()
 
-    say("Training precipitation classifier ...")
-    precip_model = train_precip_model(
-        X_train, y_train[TARGET_PRECIP], X_validate, y_validate[TARGET_PRECIP])
+    # (target, label, column, model factory, validation scorer, test scorer)
+    plan = (
+        ("temperature", "next-day temperature", TARGET_TEMP, make_temperature_model,
+         lambda m, X, y: evaluate_temperature(m, X, y, persistence["validate"]),
+         lambda m, X, y: evaluate_temperature(m, X, y, persistence["test"])),
+        ("precipitation", "next-day precipitation", TARGET_PRECIP, make_precip_model,
+         evaluate_precip, evaluate_precip),
+        ("condition", "next-day condition", TARGET_CONDITION,
+         make_condition_model(len(condition_classes)),
+         lambda m, X, y: evaluate_condition(m, X, y, condition_classes),
+         lambda m, X, y: evaluate_condition(m, X, y, condition_classes)),
+    )
 
-    say("Training condition classifier ...")
-    condition_model = train_condition_model(
-        X_train, y_train[TARGET_CONDITION], X_validate, y_validate[TARGET_CONDITION],
-        n_classes=len(condition_classes))
+    models: dict[str, object] = {}
+    metrics: dict[str, dict] = {}
+    for target, label, column, factory, score_validate, score_test in plan:
+        say(f"Searching {label} ...")
+        metric = SELECTION_METRIC[target]
+        trials = search(factory, score_validate, metric,
+                        X_train, y_train[column], X_validate, y_validate[column],
+                        say=say)
+        best = trials[0]
+        models[target] = best["model"]
+        say(f"  best: {best['name']} ({metric} {best['score']:.4f})")
+        say()
 
-    metrics = {
-        "temperature": {
-            "best_iteration": int(temp_model.best_iteration),
-            "validate": evaluate_temperature(temp_model, X_validate,
-                                             y_validate[TARGET_TEMP], persistence["validate"]),
-            "test": evaluate_temperature(temp_model, X_test,
-                                         y_test[TARGET_TEMP], persistence["test"]),
-        },
-        "precipitation": {
-            "best_iteration": int(precip_model.best_iteration),
-            "validate": evaluate_precip(precip_model, X_validate, y_validate[TARGET_PRECIP]),
-            "test": evaluate_precip(precip_model, X_test, y_test[TARGET_PRECIP]),
-        },
-        "condition": {
-            "best_iteration": int(condition_model.best_iteration),
-            "validate": evaluate_condition(condition_model, X_validate,
-                                           y_validate[TARGET_CONDITION], condition_classes),
-            "test": evaluate_condition(condition_model, X_test,
-                                       y_test[TARGET_CONDITION], condition_classes),
-        },
-    }
+        metrics[target] = {
+            "config": best["name"],
+            "params": best["params"],
+            "best_iteration": best["best_iteration"],
+            "validate": best["validate"],
+            "test": score_test(best["model"], X_test, y_test[column]),
+            "selection_metric": metric,
+            "learning_curve": best["curve"],
+            # Every candidate, model objects dropped this keeps the bundle small while leaving the search auditable after the fact.
+            "trials": [
+                {key: trial[key] for key in
+                 ("name", "params", "best_iteration", "capped", "score", "seconds",
+                  "validate")}
+                for trial in trials
+            ],
+        }
+
+    temp_model = models["temperature"]
+    precip_model = models["precipitation"]
+    condition_model = models["condition"]
 
     if not quiet:
+        report_search(metrics)
         report(metrics, {
             "temperature": top_features(temp_model, names),
             "precipitation": top_features(precip_model, names),
@@ -412,12 +530,12 @@ def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     saved_to = save_bundle(bundle, model_dir)
-    say(f"Saved models to {saved_to}")
+    say("Saved best model per target to " + str(saved_to) + ": "
+        + ", ".join(f"{target}={entry['config']}" for target, entry in metrics.items()))
     say(f'Forecast with: python predict_weather.py --city "New York" '
         f'--date {raw["date"].max().date()}')
     return bundle
 
-# CLI
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

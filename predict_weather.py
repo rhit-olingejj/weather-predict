@@ -35,7 +35,6 @@ def match_city(query: str, known: list[str]) -> str:
 
 
 def _to_builtin(value):
-    """Make numpy scalars JSON-serializable."""
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.floating):
@@ -143,6 +142,10 @@ class WeatherPredictor:
                 "bundle_version": self.bundle_version,
                 "trained_at": self.trained_at,
                 "split": self.split,
+                "configs": {
+                    target: entry.get("config", "unknown")
+                    for target, entry in self.metrics.items()
+                },
             },
         }
 
