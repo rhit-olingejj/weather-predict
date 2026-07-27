@@ -42,11 +42,11 @@ def main():
     cutoff_date_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
     print(f"Extracting data from {cutoff_date_str} to present...")
 
-    # connect to your database
-    # NOTE: replace this with your actual database connection!
+    # connect to database
+    # NOTE: needs replaced for actual db info
     conn = psycopg2.connect("dbname=test user=postgres password=secret")
 
-    # define SQL Query (Joining all tables to create a flat export)
+    # define SQL query (joining all tables to create a flat export)
     query = f"""
     SELECT 
         w.dtg,
