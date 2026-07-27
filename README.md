@@ -19,19 +19,6 @@ $ python xg.py                            # search + train, ~2 min
 $ python predict_weather.py --city "New York" --date 2024-12-31
 ```
 
-## XGBoost training process
-
-How `xg.py` turns `weather_daily.csv` into the three next-day models that
-`predict_weather.py` serves — features, the parameter search, and the bundle it
-saves. Every feature describes day `D` or earlier; every label describes `D+1`.
-
-![xg.py: load, build features, split 64/16/20, search 10 candidates per target, score once on test, save the bundle](xg_flow.png)
-
-Calendar dates themselves are excluded, so seasonality reaches the models only
-through cyclical encodings that repeat every year. The winner is kept exactly as
-fitted rather than refit on train + validation: refitting would discard the
-early-stopping set that chose its tree count.
-
 ## Tests
 
 ```console
