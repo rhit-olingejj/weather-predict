@@ -185,7 +185,6 @@ def format_prediction(prediction: dict) -> str:
     return "\n".join(lines)
 
 
-#  CLI
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
