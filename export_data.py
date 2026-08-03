@@ -14,7 +14,21 @@ command-line options:
 import argparse
 import psycopg2
 import pandas as pd
+import os
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
+
+# constants and configuration
+load_dotenv()
+DB_NAME = os.getenv("DB_NAME").strip()
+DB_USER = os.getenv("DB_USER").strip()
+DB_PASSWORD = os.getenv("DB_PASSWORD").strip()
+DB_HOST = os.getenv("DB_HOST").strip()
+DB_PORT = os.getenv("DB_PORT").strip()
+
+SCHEMA_FILE = "weather_predict_schema.sql"
+SCHEMA_NAME = "weather_predict_db"
+
 
 def main():
     parser = argparse.ArgumentParser(description="Export weather data to CSV or JSON")
@@ -43,10 +57,17 @@ def main():
     print(f"Extracting data from {cutoff_date_str} to present...")
 
     # connect to database
-    # NOTE: needs replaced for actual db info
-    conn = psycopg2.connect("dbname=test user=postgres password=secret")
+    conn = psycopg2.connect(
+                host=DB_HOST,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                port=DB_PORT,
+                )
+
 
     # define SQL query (joining all tables to create a flat export)
+    cur.execute(f"SET search_path TO {SCHEMA_NAME}, public;")
     query = f"""
     SELECT 
         w.dtg,
