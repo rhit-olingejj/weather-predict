@@ -10,7 +10,6 @@ command-line options:
   -d, --days DAYS       How many days back to include data
 
 """
-
 import argparse
 import psycopg2
 import pandas as pd
@@ -20,55 +19,31 @@ from datetime import datetime, timedelta
 
 # constants and configuration
 load_dotenv()
-DB_NAME = os.getenv("DB_NAME").strip()
-DB_USER = os.getenv("DB_USER").strip()
-DB_PASSWORD = os.getenv("DB_PASSWORD").strip()
-DB_HOST = os.getenv("DB_HOST").strip()
-DB_PORT = os.getenv("DB_PORT").strip()
 
-SCHEMA_FILE = "weather_predict_schema.sql"
+# safely load env variables and fallback to empty strings if missing
+DB_NAME = os.getenv("DB_NAME", "").strip()
+DB_USER = os.getenv("DB_USER", "").strip()
+DB_PASSWORD = os.getenv("DB_PASSWORD", "").strip()
+DB_HOST = os.getenv("DB_HOST", "").strip()
+DB_PORT = os.getenv("DB_PORT", "").strip()
+
 SCHEMA_NAME = "weather_predict_db"
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Export weather data to CSV or JSON")
-    
-    parser.add_argument('-f', '--format', 
-                        choices=['csv', 'json'], 
-                        required=True, 
-                        help="Output format (csv or json)")
-                        
-    parser.add_argument('-o', '--output', 
-                        required=True, 
-                        help="Output filename (ex: export.csv)")
-                        
-    parser.add_argument('-d', '--days', 
-                        type=int, 
-                        required=True, 
-                        help="How many days back to include data")
-
-    args = parser.parse_args()
-
-    # calculate the time window based on '--days' argument
-    cutoff_date = datetime.now() - timedelta(days=args.days)
-    
-    # format the date to match SQL standard DATETIME (YYYY-MM-DD HH:MM:SS)
-    cutoff_date_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
-    print(f"Extracting data from {cutoff_date_str} to present...")
-
-    # connect to database
-    conn = psycopg2.connect(
-                host=DB_HOST,
-                dbname=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                port=DB_PORT,
-                )
+def get_cutoff_date_str(days):
+    """
+    calculates the cutoff date string based on days argument
+    """
+    cutoff_date = datetime.now() - timedelta(days=days)
+    return cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
 
 
-    # define SQL query (joining all tables to create a flat export)
-    cur.execute(f"SET search_path TO {SCHEMA_NAME}, public;")
-    query = f"""
+def build_query(days):
+    """
+    generates the SQL query with the correct cutoff date
+    """
+    cutoff_date_str = get_cutoff_date_str(days)
+    return f"""
     SELECT 
         w.dtg,
         c.city_name,
@@ -89,27 +64,56 @@ def main():
     ORDER BY w.dtg DESC;
     """
 
+def save_dataframe(df, file_format, output_file):
+    """
+    saves the dataframe to the requested file format (csv or json)
+    """
+    if file_format == 'csv':
+        df.to_csv(output_file, index=False)
+    elif file_format == 'json':
+        df.to_json(output_file, orient='records', date_format='iso', indent=4)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Export weather data to CSV or JSON")
+    
+    parser.add_argument('-f', '--format', choices=['csv', 'json'], required=True, 
+                        help="Output format (csv or json)")
+    parser.add_argument('-o', '--output', required=True, 
+                        help="Output filename (ex: export.csv)")
+    parser.add_argument('-d', '--days', type=int, required=True, 
+                        help="How many days back to include data")
+
+    args = parser.parse_args()
+    print(f"Extracting data from {get_cutoff_date_str(args.days)} to present day")
+
     try:
-        # run query and load directly into dataframe 
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT,
+            options=f"-c search_path={SCHEMA_NAME},public" #pass schema name in connection
+        )
+
+        query = build_query(args.days)
         df = pd.read_sql_query(query, conn)
 
         if df.empty:
             print("No data found for the specified timeframe.")
             return
 
-        # export as csv or json based on argument 
-        if args.format == 'csv':
-            df.to_csv(args.output, index=False)
-        elif args.format == 'json':
-            df.to_json(args.output, orient='records', date_format='iso', indent=4)
-
+        save_dataframe(df, args.format, args.output)
         print(f"Exported {len(df)} records to {args.output}")
 
     except Exception as e:
         print(f"Error: {e}")
         
     finally:
-        conn.close()
+        # close connection if it was successfully created
+        if 'conn' in locals() and conn:
+            conn.close()
 
 
 if __name__ == "__main__":
