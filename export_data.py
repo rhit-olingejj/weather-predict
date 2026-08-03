@@ -2,6 +2,9 @@
 author: Daniel Schuster
 script to export database information in JSON or CSV format
 
+uses database information and credentials from environment variables
+to connect.  copy .env.example to .env and fill out required info
+
 command-line options:
   -h, --help            show this help message and exit
   -f, --format {csv,json}
