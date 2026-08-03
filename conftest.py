@@ -71,6 +71,8 @@ def trained(tmp_path_factory):
     csv_path = directory / "weather_daily.csv"
     make_raw().to_csv(csv_path, index=False, encoding="utf-8")
 
+    # source is pinned rather than left to DATA_SOURCE: a developer with a filled-in .env must not have the suite reach for their database.
     with mock.patch.object(xg, "PARAM_GRID", TINY_GRID):
-        bundle = xg.train(data_path=str(csv_path), model_dir=str(directory), quiet=True)
+        bundle = xg.train(data_path=str(csv_path), model_dir=str(directory), quiet=True,
+                          source="csv")
     return {"bundle": bundle, "model_dir": directory, "data_path": csv_path}

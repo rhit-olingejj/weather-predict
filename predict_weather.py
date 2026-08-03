@@ -11,12 +11,13 @@ import numpy as np
 import pandas as pd
 
 from config import (
+    DATA_SOURCES,
     DEFAULT_DATA,
     DEFAULT_MODEL_DIR,
     MODEL_FILENAME,
     PRECIP_THRESHOLD_MM,
 )
-from xg import build_features, convert_names, load_raw
+from xg import build_features, convert_names, load_observations
 
 API_VERSION = "1.0"
 
@@ -48,7 +49,8 @@ class WeatherPredictor:
     def __init__(self, temp_model, precip_model, condition_model,
                  feature_names: list[str], condition_classes: list[str],
                  cities: dict, data_path: str, split: str, metrics: dict,
-                 trained_at: str, bundle_version: str = "unknown"):
+                 trained_at: str, bundle_version: str = "unknown",
+                 data_source: str = "csv"):
         self.temp_model = temp_model
         self.precip_model = precip_model
         self.condition_model = condition_model
@@ -56,6 +58,8 @@ class WeatherPredictor:
         self.condition_classes = condition_classes
         self.cities = cities
         self.data_path = data_path
+        # "csv" or "db" -- whichever the bundle was trained from; history for a forecast should come from the same place.
+        self.data_source = data_source
         self.split = split
         self.metrics = metrics
         self.trained_at = trained_at
@@ -73,13 +77,16 @@ class WeatherPredictor:
     def known_cities(self) -> list[str]:
         return sorted(self.cities)
 
-    def features(self, data_path: str | Path | None = None) -> pd.DataFrame:
-        if self._features is None or data_path is not None:
-            self._features = build_features(load_raw(data_path or self.data_path))
+    def features(self, data_path: str | Path | None = None,
+                 source: str | None = None) -> pd.DataFrame:
+        if self._features is None or data_path is not None or source is not None:
+            self._features = build_features(
+                load_observations(source or self.data_source, data_path or self.data_path))
         return self._features
 
-    def predict(self, city: str, date, data_path: str | Path | None = None) -> dict:
-        features = self.features(data_path)
+    def predict(self, city: str, date, data_path: str | Path | None = None,
+                source: str | None = None) -> dict:
+        features = self.features(data_path, source)
         canonical = match_city(city, sorted(features["city"].unique()))
         as_of = pd.Timestamp(date).normalize()
 
@@ -191,8 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--city", required=True, help='e.g. "New York", tokyo, "sao paulo"')
     parser.add_argument("--date", required=True,
                         help="last observed day, YYYY-MM-DD; forecast is for the next day")
+    parser.add_argument("--source", choices=DATA_SOURCES, default=None,
+                        help="where the history comes from (default: whichever the "
+                             "bundle was trained from)")
     parser.add_argument("--data", default=DEFAULT_DATA,
-                        help=f"observation CSV (default: {DEFAULT_DATA})")
+                        help=f"observation CSV, used by --source csv (default: {DEFAULT_DATA})")
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR,
                         help=f"where the model bundle lives (default: {DEFAULT_MODEL_DIR})")
     parser.add_argument("--json", action="store_true",
@@ -204,8 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         predictor = WeatherPredictor.load(args.model_dir)
-        prediction = predictor.predict(args.city, args.date, data_path=args.data)
-    except (FileNotFoundError, ValueError) as err:
+        prediction = predictor.predict(args.city, args.date, data_path=args.data,
+                                       source=args.source)
+    except (FileNotFoundError, ValueError, RuntimeError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
 

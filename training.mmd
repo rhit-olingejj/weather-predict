@@ -3,7 +3,9 @@ title: XGBoost training process — xg.py
 ---
 flowchart TD
     CSV[("weather_daily.csv<br/>daily observations · 5 cities · 2020-2024")]
-    LOAD["load_raw()<br/>parse dates · sort by city, date · drop duplicate city+date"]
+    DB[("PostgreSQL weather_predict_db<br/>wx_data · one row per observation timestamp")]
+    ROLL["db.py fetch_observations()<br/>roll dtg up to city-days in DB_TIMEZONE<br/>mean/max/min temp_C · summed precip_mm · highest wmo_code"]
+    LOAD["load_observations() → normalize_raw()<br/>parse dates · sort by city, date · drop duplicate city+date"]
     FEAT["build_features()<br/>one row per city and day D<br/>today · lags 1,2,3,7 · trailing 3,7,14,30 · momentum<br/>place · season of D+1 · condition one-hots"]
     WARM["drop warm-up rows<br/>first 29 days per city lack a full 30-day window"]
     LAB["drop rows with no next-day observation<br/>LabelEncoder on y_condition"]
@@ -31,7 +33,9 @@ flowchart TD
     BUNDLE[("models/xgb_weather.joblib<br/>3 boosters + feature schema + classes + metrics")]
     SERVE["predict_weather.py<br/>temperature_c · precipitation probability<br/>condition + class distribution"]
 
-    CSV --> LOAD --> FEAT --> WARM --> LAB --> XY --> SPLIT
+    DB -->|--source db| ROLL --> LOAD
+    CSV -->|--source csv| LOAD
+    LOAD --> FEAT --> WARM --> LAB --> XY --> SPLIT
     SPLIT --> TRAIN
     SPLIT --> VAL
     SPLIT --> TEST
@@ -52,6 +56,6 @@ flowchart TD
     classDef data fill:#e8eef7,stroke:#4a6fa5,color:#1a2a3a
     classDef split fill:#eef3e8,stroke:#6a8f4a,color:#1a2a3a
     classDef model fill:#f7efe4,stroke:#b07d3a,color:#2a1f10
-    class CSV,BUNDLE data
+    class CSV,DB,BUNDLE data
     class TRAIN,VAL,TEST split
     class R,B,M,SCORE,SERVE model

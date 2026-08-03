@@ -2,3 +2,5 @@
 *.json
 models/
 __pycache__/
+.env
+!.env.example
