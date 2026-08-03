@@ -1,2 +1,4 @@
 *.csv
 *.json
+models/
+__pycache__/
