@@ -3,6 +3,18 @@ import pandas as pd
 
 """ Splits X (independent variables) and y (dependent variables) into train, validate, and test datasets """
 def Train_validate_test_split(X, y):
+    if (isinstance(X, pd.DataFrame) == False):
+        raise ValueError("X is not a dataframe")
+
+    if (isinstance(y, pd.DataFrame) == False):
+        raise ValueError("y is not a dataframe")
+
+    if (X.size % 8 != 0):
+        raise ValueError("Cannot evenly split X")
+
+    if (y.size % 8 != 0):
+        raise ValueError("Cannot evenly split y")
+
     dataframe_size = X.size # since X and y are from the same dataframe, the size is the same
 
     test_df_size = 0.2 # test data splits off from train + validation dataset, intial df for X_train and y_train
