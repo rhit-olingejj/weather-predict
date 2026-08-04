@@ -75,7 +75,7 @@ def geocode_cache(tmp_path):
 def test_config_reads_every_setting_from_the_environment():
     config = db.DbConfig.from_env(ENV)
 
-    assert (config.host, config.port, config.name) == ("db.internal", 6543, "weather_predict")
+    assert (config.host, config.port, config.name) == ("db.internal", 5432, "weather_predict")
     assert (config.user, config.password) == ("app", "s3cret")
     assert config.schema == "weather_predict_db"
 

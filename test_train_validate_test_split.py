@@ -40,6 +40,28 @@ def test_split_success():
     assert X_test.size == X_test_size
     assert y_test.size == y_test_size
 
+def test_split_row_count_need_not_be_divisible_by_eight():
+    # The real training matrix is 8,985 rows x 65 features; neither number divides by 8.
+    rows = 8985
+    X_df = pd.DataFrame({"col1": np.zeros(rows), "col2": np.zeros(rows)})
+    y_df = pd.DataFrame({"col3": np.zeros(rows)})
+
+    X_train, X_validate, X_test, y_train, y_validate, y_test = \
+        Train_validate_test_split(X_df, y_df)
+
+    assert len(X_train) + len(X_validate) + len(X_test) == rows
+    assert len(y_train) + len(y_validate) + len(y_test) == rows
+    assert min(len(part) for part in (X_train, X_validate, X_test)) > 0
+
+
+def test_split_too_few_rows():
+    X_df = pd.DataFrame({"col1": np.zeros(4), "col2": np.zeros(4)})
+    y_df = pd.DataFrame({"col3": np.zeros(4)})
+
+    with pytest.raises(ValueError, match="8 rows"):
+        Train_validate_test_split(X_df, y_df)
+
+
 def test_split_X_not_a_dataframe():
     X = {
         "col1": np.zeros(400),

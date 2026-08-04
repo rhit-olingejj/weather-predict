@@ -17,9 +17,11 @@ Usage:
     python fetch_weather.py --out data/wx.csv
     python fetch_weather.py --start 2020-01-01 --end 2024-12-31
     python fetch_weather.py --refresh            # re-geocode, ignore cache
+    python fetch_weather.py --to-db              # also insert into weather_predict_db
+    python fetch_weather.py --to-db --create-database --create-schema   # first run
 
 Dependencies:
-    pip install requests
+    pip install requests            # --to-db additionally needs psycopg2 and pandas
 """
 from __future__ import annotations
 
@@ -249,6 +251,16 @@ def main() -> int:
                         help=f"Geocoding cache path (default: {DEFAULT_CACHE})")
     parser.add_argument("--refresh", action="store_true",
                         help="Re-geocode and overwrite the cache")
+    parser.add_argument("--to-db", action="store_true",
+                        help="Insert the fetched rows into weather_predict_db (see .env)")
+    parser.add_argument("--create-database", action="store_true",
+                        help="With --to-db: CREATE DATABASE DB_NAME if it is missing")
+    parser.add_argument("--create-schema", action="store_true",
+                        help="With --to-db: run weather_predict_schema.sql first")
+    parser.add_argument("--replace", action="store_true",
+                        help="With --to-db: delete these city-days before inserting")
+    parser.add_argument("--no-csv", action="store_true",
+                        help="With --to-db: skip writing the CSV")
     args = parser.parse_args()
 
     start, end = resolve_range(args)
@@ -267,12 +279,45 @@ def main() -> int:
             print(f"    {len(rows)} days")
             all_rows.extend(rows)
 
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        writer.writeheader()
-        writer.writerows(all_rows)
+    if not (args.to_db and args.no_csv):
+        with open(args.out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(all_rows)
+        print(f"Wrote {len(all_rows)} rows to {args.out}")
 
-    print(f"Wrote {len(all_rows)} rows to {args.out}")
+    if args.to_db:
+        return insert(all_rows, cities, args)
+    return 0
+
+
+def insert(rows: list[dict], cities: list[City], args: argparse.Namespace) -> int:
+    """Hand the fetched rows to load_weather_db, no CSV round trip in between."""
+    # Imported here so a plain CSV fetch needs neither psycopg2 nor pandas.
+    import db
+    import load_weather_db
+
+    # The schema wants each city's country and admin division, which geocoding already resolved -- no need to re-read the cache file.
+    places = {
+        city.name: {"country": city.country, "country_code": city.country_code,
+                    "admin1": city.admin1}
+        for city in cities
+    }
+
+    config = db.DbConfig.from_env()
+    try:
+        if args.create_database:
+            load_weather_db.create_database(config)
+        print(f"Loading into {config.describe()}")
+        inserted, skipped = load_weather_db.load(
+            rows, places, config, replace=args.replace,
+            schema_first=args.create_schema)
+    except (FileNotFoundError, ValueError, RuntimeError) as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+
+    print(f"Inserted {inserted:,} wx_data row(s)"
+          + (f", skipped {skipped:,} already present" if skipped else ""))
     return 0
 
 
