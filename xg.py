@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import unicodedata
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from sklearn.metrics import (
 from sklearn.preprocessing import LabelEncoder
 
 from config import (
+    CITY_COORDINATES,
     DATA_SOURCES,
     DEFAULT_DATA,
     DEFAULT_DATA_SOURCE,
@@ -107,6 +109,41 @@ def load_raw(data_path: str | Path) -> pd.DataFrame:
     return normalize_raw(pd.read_csv(path, encoding="utf-8"), str(path))
 
 
+def coordinates(path: str | Path = CITY_COORDINATES) -> dict[str, tuple[float, float]]:
+    """City coordinates keyed by folded name, from the cache fetch_weather.py writes."""
+    file = Path(path)
+    if not file.exists():
+        raise FileNotFoundError(
+            f"{file} not found -- the database stores city names but no coordinates, "
+            "so run `python fetch_weather.py` once to build the geocoding cache"
+        )
+    cache = json.loads(file.read_text(encoding="utf-8"))
+    return {
+        convert_names(entry["name"]): (float(entry["latitude"]), float(entry["longitude"]))
+        for entry in cache.values()
+        if entry.get("latitude") is not None and entry.get("longitude") is not None
+    }
+
+
+def attach_coordinates(frame: pd.DataFrame,
+                       path: str | Path = CITY_COORDINATES) -> pd.DataFrame:
+    # latitude is load-bearing -- it signs the seasonal wave by hemisphere -- so an unmatched city is an error rather than a silently missing feature. Names are folded so "Sao Paulo" in the database still matches "São Paulo" in the cache.
+    known = coordinates(path)
+    folded = frame["city"].map(convert_names)
+    missing = sorted(set(frame.loc[~folded.isin(known), "city"]))
+    if missing:
+        raise ValueError(
+            f"no coordinates for {', '.join(repr(city) for city in missing)} in {path} "
+            "-- refresh it with `python fetch_weather.py --refresh`"
+        )
+
+    frame = frame.copy()
+    # Inserted where the CSV keeps them, so both sources hand build_features() the same column order.
+    frame.insert(1, "latitude", folded.map(lambda name: known[name][0]))
+    frame.insert(2, "longitude", folded.map(lambda name: known[name][1]))
+    return frame
+
+
 def load_db() -> pd.DataFrame:
     # Imported here so the CSV path never needs psycopg2 installed.
     from db import DbConfig, fetch_observations
@@ -123,7 +160,7 @@ def load_db() -> pd.DataFrame:
             f"{', '.join(repr(city) for city in clashing)} -- give them distinct "
             "cities.city_name values before training"
         )
-    return normalize_raw(frame, config.describe())
+    return normalize_raw(attach_coordinates(frame), config.describe())
 
 
 def load_observations(source: str | None = None,

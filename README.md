@@ -44,6 +44,13 @@ and the day's highest WMO code, with the day boundary drawn in `DB_TIMEZONE`.
 Hourly rows give a true daily range; a database holding one row per day leaves
 `temp_max_c == temp_min_c == temp_mean_c` and `temp_range_c` at zero.
 
+`cities` stores names but no coordinates, and the models need latitude to sign
+the seasonal wave by hemisphere, so `xg.attach_coordinates()` matches each city
+name against `geocode_cache.json` (written by `fetch_weather.py`, path
+overridable with `CITY_COORDINATES`). Names are folded before matching, so
+`Sao Paulo` in the database still finds `São Paulo` in the cache; a city with no
+entry is an error rather than a silently missing feature.
+
 ## Tests
 
 ```console

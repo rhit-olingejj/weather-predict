@@ -14,7 +14,7 @@ MODEL_FILENAME = "xgb_weather.joblib"
 PRECIP_THRESHOLD_MM = 0.1
 
 # Database credentials live in a gitignored .env next to this file (copy .env.example). Loaded here because both training and serving import config, and python-dotenv is optional -- without it, real environment variables still work.
-DOTENV_PATH = Path(__file__).with_name(".env")
+DOTENV_PATH = ".env"
 
 
 def load_env(path: Path = DOTENV_PATH) -> None:
@@ -31,3 +31,6 @@ load_env()
 # Where observations are read from: "csv" reads DEFAULT_DATA, "db" reads the SQL database configured above. Overridden per run by --source.
 DATA_SOURCES = ("csv", "db")
 DEFAULT_DATA_SOURCE = (os.getenv("DATA_SOURCE") or "csv").strip().lower()
+
+# weather_predict_db.cities stores city names but no coordinates, so the database path takes each city's latitude and longitude from the geocoding cache fetch_weather.py writes.
+CITY_COORDINATES = os.getenv("CITY_COORDINATES") or "geocode_cache.json"
