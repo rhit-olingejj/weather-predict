@@ -11,6 +11,8 @@ observations for New York, London, Tokyo, Sydney and São Paulo.
 | `train_validate_test_split.py` | the 64/16/20 split helper |
 | `config.py` | paths and thresholds shared by training and serving |
 | `conftest.py` | synthetic fixtures — no test touches the real CSV |
+| `export_data.py` | exports data from the database as a .csv or .json file |
+| `insert_data.py` | inserts data from a .csv file into the database |
 
 ```console
 $ pip install -r requirements.txt

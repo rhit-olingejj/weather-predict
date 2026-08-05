@@ -3,7 +3,7 @@ Author: Daniel Schuster
 
 flags:
     -i, --input <input_csv_filepath>: required.  sets the input CSV file to insert data from
-    --init: optional argument that initializes the database schema.  should only be run once
+    --init: optional, initializes the database schema.  should only be run once
 """
 
 import os
