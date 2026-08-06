@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""Fetch historical daily weather for 5 cities from the Open-Meteo Archive API.
-
-Pulls a rolling window from ~5 years ago up to 24 hours ago (the archive API
-lags real time by roughly a day) for the center of each city, and writes the
-results to CSV.
-
-Cities: New York, London, Tokyo, Sydney, Sao Paulo (city-center coordinates).
-
-City-center coordinates and timezone are resolved from the Open-Meteo
-Geocoding API (given just the city name) and cached to a local JSON file, so
-subsequent runs are offline-safe and reproducible.
-
-Usage:
-    python fetch_weather.py                      # 5 years -> 24h ago, ./weather_daily.csv
-    python fetch_weather.py --years 3
-    python fetch_weather.py --out data/wx.csv
-    python fetch_weather.py --start 2020-01-01 --end 2024-12-31
-    python fetch_weather.py --refresh            # re-geocode, ignore cache
-    python fetch_weather.py --to-db              # also insert into weather_predict_db
-    python fetch_weather.py --to-db --create-database --create-schema   # first run
-
-Dependencies:
-    pip install requests            # --to-db additionally needs psycopg2 and pandas
-"""
 from __future__ import annotations
 
 import argparse

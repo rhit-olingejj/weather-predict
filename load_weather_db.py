@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Load the daily observation CSV into weather_predict_db.
-
-Reads the CSV fetch_weather.py writes and fills the schema bottom-up --
-states, admin_div_1, cities, wmo_codes, then one wx_data row per city-day.
-Connection details come from .env, the same ones db.py reads.
-
-    python load_weather_db.py --create-schema     # first run: build the tables too
-    python load_weather_db.py                     # load weather_daily.csv
-    python load_weather_db.py --replace           # reload, discarding those city-days
-
-Re-running is safe: a city-day already in wx_data is skipped rather than
-duplicated, since the schema has no unique constraint to conflict on.
-"""
 from __future__ import annotations
 
 import argparse
@@ -50,7 +37,6 @@ WMO_TEXT = {
 
 
 def city_places(path: str | Path = CITY_COORDINATES) -> dict[str, dict]:
-    """Country and admin division per city, from the geocoding cache, keyed by name."""
     file = Path(path)
     if not file.exists():
         raise FileNotFoundError(
@@ -68,7 +54,6 @@ def _one(cursor, query: str, params: tuple):
 
 def _find_or_add(cursor, schema: str, table: str, key: str, key_value: str,
                  columns: tuple[str, ...], values: tuple, id_column: str) -> int:
-    """Reference rows are keyed by name -- the schema has no unique constraint to upsert on."""
     found = _one(cursor, f"SELECT {id_column} FROM {schema}.{table} WHERE {key} = %s",
                  (key_value,))
     if found is not None:
@@ -81,7 +66,6 @@ def _find_or_add(cursor, schema: str, table: str, key: str, key_value: str,
 
 def load_reference(cursor, schema: str, cities: list[str], places: dict[str, dict],
                    codes: list[int], say=print) -> dict[str, int]:
-    """Fill states, admin_div_1, cities and wmo_codes; return city name -> city_id."""
     city_ids: dict[str, int] = {}
     for city in cities:
         place = places.get(city)
@@ -161,11 +145,6 @@ def load_observations(cursor, schema: str, rows: list[tuple], replace: bool,
 def load(raw, places: dict[str, dict], config: db.DbConfig | None = None, *,
          replace: bool = False, schema_first: bool = False,
          say=print) -> tuple[int, int]:
-    """Insert observations into wx_data; returns (inserted, skipped).
-
-    raw is anything pandas can turn into the CSV's columns -- a DataFrame from
-    load_raw(), or the row dicts fetch_weather.py already has in memory.
-    """
     # Imported here: fetch_weather.py only needs this when asked to write to the database, and xg pulls in xgboost.
     from xg import normalize_raw
 
