@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import unicodedata
 from datetime import datetime, timezone
@@ -25,7 +26,10 @@ from sklearn.metrics import (
 from sklearn.preprocessing import LabelEncoder
 
 from config import (
+    CITY_COORDINATES,
+    DATA_SOURCES,
     DEFAULT_DATA,
+    DEFAULT_DATA_SOURCE,
     DEFAULT_MODEL_DIR,
     MODEL_FILENAME,
     PRECIP_THRESHOLD_MM,
@@ -79,23 +83,94 @@ def categorize_wmo(code) -> str:
         return UNKNOWN_CATEGORY
     return WMO_TO_CATEGORY.get(int(code), UNKNOWN_CATEGORY)
 
-# Hard coded to CSV while we wait for DB to be operational. The CSV is built by fetch_weather.py and consumed by train.py and predict_weather.py.
+REQUIRED_COLUMNS = ("city", "date", "temp_mean_c", "temp_max_c", "temp_min_c",
+                    "precip_mm", "wmo_code")
+
+
+# One row per city-day, whatever the origin: the CSV from fetch_weather.py or the SQL rollup in db.py. Both are validated and ordered here so build_features() only ever sees one shape.
+def normalize_raw(df: pd.DataFrame, origin: str) -> pd.DataFrame:
+    missing = set(REQUIRED_COLUMNS) - set(df.columns)
+    if missing:
+        raise ValueError(f"{origin} is missing column(s): {', '.join(sorted(missing))}")
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["city", "date"]).drop_duplicates(["city", "date"])
+    return df.reset_index(drop=True)
+
+
 def load_raw(data_path: str | Path) -> pd.DataFrame:
     path = Path(data_path)
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found -- run `python fetch_weather.py` first to build it"
+            f"{path} not found -- run `python fetch_weather.py` first to build it, "
+            "or read the database instead with --source db"
+        )
+    return normalize_raw(pd.read_csv(path, encoding="utf-8"), str(path))
+
+
+def coordinates(path: str | Path = CITY_COORDINATES) -> dict[str, tuple[float, float]]:
+    """City coordinates keyed by folded name, from the cache fetch_weather.py writes."""
+    file = Path(path)
+    if not file.exists():
+        raise FileNotFoundError(
+            f"{file} not found -- the database stores city names but no coordinates, "
+            "so run `python fetch_weather.py` once to build the geocoding cache"
+        )
+    cache = json.loads(file.read_text(encoding="utf-8"))
+    return {
+        convert_names(entry["name"]): (float(entry["latitude"]), float(entry["longitude"]))
+        for entry in cache.values()
+        if entry.get("latitude") is not None and entry.get("longitude") is not None
+    }
+
+
+def attach_coordinates(frame: pd.DataFrame,
+                       path: str | Path = CITY_COORDINATES) -> pd.DataFrame:
+    # latitude is load-bearing -- it signs the seasonal wave by hemisphere -- so an unmatched city is an error rather than a silently missing feature. Names are folded so "Sao Paulo" in the database still matches "São Paulo" in the cache.
+    known = coordinates(path)
+    folded = frame["city"].map(convert_names)
+    missing = sorted(set(frame.loc[~folded.isin(known), "city"]))
+    if missing:
+        raise ValueError(
+            f"no coordinates for {', '.join(repr(city) for city in missing)} in {path} "
+            "-- refresh it with `python fetch_weather.py --refresh`"
         )
 
-    df = pd.read_csv(path, encoding="utf-8")
-    missing = {"city", "date", "temp_mean_c", "temp_max_c", "temp_min_c",
-               "precip_mm", "wmo_code"} - set(df.columns)
-    if missing:
-        raise ValueError(f"{path} is missing column(s): {', '.join(sorted(missing))}")
+    frame = frame.copy()
+    # Inserted where the CSV keeps them, so both sources hand build_features() the same column order.
+    frame.insert(1, "latitude", folded.map(lambda name: known[name][0]))
+    frame.insert(2, "longitude", folded.map(lambda name: known[name][1]))
+    return frame
 
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values(["city", "date"]).drop_duplicates(["city", "date"])
-    return df.reset_index(drop=True)
+
+def load_db() -> pd.DataFrame:
+    # Imported here so the CSV path never needs psycopg2 installed.
+    from db import DbConfig, fetch_observations
+
+    config = DbConfig.from_env()
+    frame = fetch_observations(config)
+
+    # Everything downstream keys a city by name, so two cities sharing one would be silently deduplicated into a single half-complete series.
+    repeated = frame.groupby(["city", "date"]).size()
+    clashing = sorted({city for city, _ in repeated[repeated > 1].index})
+    if clashing:
+        raise ValueError(
+            f"{config.describe()} has more than one city row named "
+            f"{', '.join(repr(city) for city in clashing)} -- give them distinct "
+            "cities.city_name values before training"
+        )
+    return normalize_raw(attach_coordinates(frame), config.describe())
+
+
+def load_observations(source: str | None = None,
+                      data_path: str | Path = DEFAULT_DATA) -> pd.DataFrame:
+    source = (source or DEFAULT_DATA_SOURCE).strip().lower()
+    if source not in DATA_SOURCES:
+        raise ValueError(
+            f"unknown data source {source!r}; expected one of: {', '.join(DATA_SOURCES)}"
+        )
+    return load_db() if source == "db" else load_raw(data_path)
 
 
 def build_features(raw: pd.DataFrame) -> pd.DataFrame:
@@ -413,13 +488,15 @@ def save_bundle(bundle: dict, model_dir: str | Path) -> Path:
 
 
 def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
-          quiet: bool = False) -> dict:
+          quiet: bool = False, source: str | None = None) -> dict:
 
     def say(message: str = "") -> None:
         if not quiet:
             print(message)
 
-    raw = load_raw(data_path)
+    source = (source or DEFAULT_DATA_SOURCE).strip().lower()
+    raw = load_observations(source, data_path)
+    say(f"Source: {source} ({'database' if source == 'db' else data_path})")
     say(f"Loaded {len(raw):,} daily observations for {raw['city'].nunique()} cities "
         f"({raw['date'].min().date()} -> {raw['date'].max().date()})")
 
@@ -522,7 +599,9 @@ def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
         "feature_names": names,
         "condition_classes": condition_classes,
         "cities": cities,
+        # data_path stays the CSV fallback even for a database-trained bundle; data_source is what predict_weather.py reads by default.
         "data_path": str(data_path),
+        "data_source": source,
         "split": SPLIT_STRATEGY,
         "metrics": metrics,
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -537,8 +616,11 @@ def train(data_path: str = DEFAULT_DATA, model_dir: str = DEFAULT_MODEL_DIR,
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--source", choices=DATA_SOURCES, default=DEFAULT_DATA_SOURCE,
+                        help="where observations come from; the database is configured "
+                             f"in .env (default: {DEFAULT_DATA_SOURCE}, from DATA_SOURCE)")
     parser.add_argument("--data", default=DEFAULT_DATA,
-                        help=f"observation CSV (default: {DEFAULT_DATA})")
+                        help=f"observation CSV, used by --source csv (default: {DEFAULT_DATA})")
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR,
                         help=f"where to save the model bundle (default: {DEFAULT_MODEL_DIR})")
     parser.add_argument("--quiet", action="store_true", help="suppress the metrics report")
@@ -547,8 +629,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        train(data_path=args.data, model_dir=args.model_dir, quiet=args.quiet)
-    except (FileNotFoundError, ValueError) as err:
+        train(data_path=args.data, model_dir=args.model_dir, quiet=args.quiet,
+              source=args.source)
+    # RuntimeError covers the database side: a missing driver or a refused connection.
+    except (FileNotFoundError, ValueError, RuntimeError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
     return 0
